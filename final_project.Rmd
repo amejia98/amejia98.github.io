@@ -1,0 +1,296 @@
+---
+title: "Final Project"
+author: "Alexis Mejia"
+output: html_document
+---
+
+What comes to mind when you think of terrorist attacks? Is it 9/11? The shooting at Sandy Hook Elementary? The Boston Marathon Bombings? These are all attacks that have taken place in recent history and have all happened in the United States. The terrorist attacks we are most familiar with are probably the ones that have occurred in the western world, due to the media giving these attacks wall-to-wall coverage. But what about terrorism in other countries? 
+
+In my own experience, I haven’t been exposed to much information about the terrorist attacks happening elsewhere in the world and if I didn’t know any better, I might assume that terrorism is an act only committed by third-world extremists in first-world countries. In this analysis, I want to look at real data and facts. 
+
+Some questions I’ll be looking at:
+	
+  *	Where are terrorist attacks taking place?
+  * How many attacks are taking place?
+  * When are terrorist attacks taking place?
+  * How lethal are these attacks?
+  *	Which regions have the most lethal attacks?
+  * What country has the most lethal attacks?
+  * What is the most common weapon in the most lethal country?
+
+For this analysis, I’ll be using the Global Terrorism Database (https://www.kaggle.com/START-UMD/gtd), an open-source database including information on terrorist attacks around the world from 1970 to 2017 (except 1993). This dataset is massive, with roughly 182,000 terrorist attacks recorded and each with 135 different attributes. 
+  
+Let's start with loading our libraries and setting up our data:
+``` {r setup, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(broom)
+library(leaflet)
+
+gtd <- read_csv("~/Documents/globalterrorismdb_0718dist.csv")
+```
+  
+For purposes of efficiency, I don’t want to analyze every single one of these attributes and would like to focus on a smaller set of them. To do this, I'll select these specific attributes:
+  
+  *	Year 
+  * Month 
+  * Day 
+  * Country 
+  * Region 
+  * Latitude
+  * Longitude
+  *	Weapon type
+  *	Number of people killed
+
+``` {r load_data}
+gtd <- gtd %>% select(iyear, imonth, iday, country_txt, region_txt, 
+                      latitude, longitude, weaptype1, weaptype1_txt, 
+                      nkill)
+
+head(gtd)
+```
+
+Ok great, now that we've got our dataset with the attributes of interest selected, let's start doing some analysis. For example, which regions have experienced the highest frequency of terrorist attacks overall? To answer this question, we'll group the data by region and then tally the number of attacks for each.
+
+``` {r region_frequency}
+region_freq <- gtd %>% group_by(region_txt) %>% tally() %>% 
+  arrange(desc(n))
+head(region_freq)
+```
+
+Our top three regions for terrorist attacks are the Middle East & North Africa, South Asia, and South America. Raw numbers are great, but it might be a bit more informative to look at the proportions to see how the regional attacks compare to the total number of attacks. A nice way to display this would be a pie chart. There's 12 regions in total which might be a little overwhelming, so let's do the top 5 regions and then classify the rest as "Other".
+
+``` {r region_freq_chart}
+other <- region_freq[6:12,]
+region_freq <- region_freq[1:5,]
+region_freq[nrow(region_freq) + 1,] = list("Other", sum(other$n))
+         
+region_freq %>%
+  mutate(share=n/nrow(gtd)) %>%
+  ggplot(aes(x="", y=share, fill=region_txt)) +
+   geom_col() +
+   geom_text(size=3.5, aes(label = scales::percent(round(share,3))), 
+             position = position_stack(vjust = .5)) +
+   coord_polar(theta = "y") + 
+   labs(fill="Region") +
+   theme_void()
+```
+
+This pie chart is more informative because while before we could see what the top three regions for terrorist attacks were, now we know that those top three regions account for roughly 63% of terrorist attacks worldwide.
+
+Moving onto our next question, I want to know how many attacks are taking place per year on average. First let's see how many attacks are taking place per year worldwide and then let's shrink it down to how many attacks per year in a single region.
+
+``` {r avg_attacks }
+## Worldwide
+worldwide <- gtd %>% dplyr::group_by(iyear) %>% tally() %>% summarize(mean_worldwide=mean(n))
+
+## Per region
+num_attacks <- gtd %>% dplyr::group_by(iyear, region_txt) %>% tally()
+per_region <- num_attacks %>% plyr::summarize(mean_region=mean(n))
+
+c(worldwide, per_region)
+```
+
+Ok so this means worldwide about 3866 attacks take place and for a region chosen at random, it would average about 343 attacks per year. Let's look at the distribution of the number of attacks over time. Each point in this plot represents the number of attacks in a region.
+
+``` {r avg_att_over_time}
+year_breaks = seq(1970, 2017, by=5)
+ggplot(data=num_attacks, aes(x=iyear, y=n)) +
+  geom_point() +
+  geom_smooth(method=lm, color="red", se=FALSE) +
+  labs(x="Year", y="Number of Attacks") + 
+  scale_x_continuous(breaks = year_breaks) +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+```
+
+The trend seems to be that the number of attacks increases over time, with the data skewed a bit more towards the right and more outliers appearing in recent years. Let's use lm to see exactly how many more attacks there are per year on average in a region.
+
+``` {r num_attack_fit}
+num_attack_fit <- lm(n~iyear, data=num_attacks)
+num_attack_fit_stats <- num_attack_fit %>% tidy()
+num_attack_fit_stats %>% select(term, estimate, std.error, p.value)
+```
+
+This means the average number of attacks increases by about 15 per year in a single region. Our null hypothesis is that there is no relationship between year and the number of attacks, while our alternate hypothesis is that there is. With a p-value of 1.88e-10, we can reject our null hypothesis with 99% confidence since 1.88e-10 < 0.01. While this relationship is statistically significant, let's see how well this model actually fits our data. To do this, we'll plot years vs the residuals of the data.
+
+``` {r num_attack_stats}
+aug_num_attack <- num_attack_fit %>% augment()
+aug_num_attack %>%
+  ggplot(aes(x=factor(iyear),y=.resid)) +
+    geom_violin() + 
+    labs(x="year", y="residual") + 
+  scale_x_discrete(breaks = year_breaks) +
+  stat_summary(fun.y=mean, geom="point", shape=23, size=2)
+```
+
+The residual data of a linear regression model is the difference between the observed y-values and the fitted y-values. In an ideal fit, the residuals would be centered around zero. It seems that our model provides a reasonable fit until about year 2000, but after that it gets a little less accurate. This is probably due to the data being skewed toward the right and with more outliers in recent years.
+
+Ok so now that we have a rough idea of how many attacks are taking place, let's look at when they're taking place. Are some months more popular for terrorist attacks than others? We'll also mutate a new attribute for month_txt instead of numbers to make our graph easier to read. I'll be excluding the 20 entries that do not have a month given to them.
+
+``` {r when_attacks}
+mths <-  c("Jan", "Feb", "Mar", "Apr", "May", "June", "July", "Aug",
+                                    "Sept", "Oct", "Nov", "Dec")
+
+pop_mths <- gtd[gtd$imonth != 0,] %>% group_by(imonth, iyear) %>% tally() %>% 
+  dplyr::summarize(mean_atks=mean(n))
+pop_mths <- pop_mths %>% mutate(imonth_txt=mths)
+pop_mths$imonth_txt <- ordered(pop_mths$imonth_txt, mths)
+
+ggplot(data=pop_mths, aes(x=imonth_txt, y=mean_atks, group=1)) +
+  geom_line(color="red") +
+  geom_point() +
+  labs(x="Month", y="Mean Number of Attacks") +
+  scale_x_discrete(breaks = mths) +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+```
+
+Here we see that May is the month with the highest average number of terrorist attacks and December is the month with the lowest. Let's see how our graph looks in regards to days of the month.
+
+``` {r avg_month}
+avg_day <- gtd[gtd$iday != 0,] %>% group_by(iday, imonth, iyear) %>% 
+  tally() %>% dplyr::summarize(mean_year=mean(n)) %>% 
+  dplyr::summarize(mean_day=mean(mean_year))
+
+ggplot(data=avg_day, aes(x=factor(iday), y=mean_day, group=1)) +
+  geom_line(color="red") +
+  geom_point() +
+  labs(x="Day", y="Mean Number of Attacks") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+```
+
+Are these differences in mean statistically significant though? We can use ANOVA to answer this. If you'd like to learn more about ANOVA, visit this link: https://www.statmethods.net/stats/anova.html.
+
+We'll be using this test on both Month vs Mean Number of Attacks and Day vs Mean Number of Attacks. We'll do it for month first.
+
+``` {r month_anova}
+mnth_anova <- gtd[gtd$imonth != 0,] %>% group_by(imonth, iyear) %>% tally() 
+month.lm <- lm(imonth~n, data = mnth_anova)
+anova(month.lm)
+```
+
+Here our p-value is 0.827. This is very large p-value which means that the difference in average number of attacks between months is not statistically significant. Let's try days next.
+
+``` {r day_anova}
+day_anova <- gtd[gtd$iday != 0,] %>% group_by(iday, imonth, iyear) %>% tally()
+day.lm <- lm(iday~n, data = day_anova)
+anova(day.lm)
+```
+
+While this result is better than our last, with a p-value of 0.1734, it still is much too high for us to say the difference in mean number of attacks on different days is statistically significant.
+
+My next question is how lethal are terrorist attacks? To answer this, I'll be using summary statistics on the nkill column (number of deaths) and look at the average number of deaths due to terrorist attacks per year. In this calculation, I'll be excluding missing values.
+
+``` {r avg_kill}
+lethal <- gtd %>% dplyr::group_by(iyear) %>% 
+  dplyr::summarize(tot_kill=sum(nkill, na.rm=TRUE))
+
+lethal %>% dplyr::summarize(avg_kill=mean(tot_kill))
+```
+
+But what does this number mean? Does it mean that every year the number of people killed is around 8763? Not necessarily. Let's look at the nkill attribute over time. To do this, we'll group the data by year and then compute the number of people killed in a terrorist attack for each year. Then we'll use ggplot to see how it has changed over time. Let's also add in a linear regression line to see the overall trend.
+
+``` {r nkill_over_time}
+ggplot(data=lethal, aes(x=iyear, y=tot_kill)) +
+  geom_bar(stat="identity", fill="red") +
+  labs(x="Year", y="Total Killed")
+```
+
+From this bar graph, we can see that there has been an overall upward trend in the number of deaths per year due to terrorist attacks and that the data is skewed towards later years. The distribution of this graph is very similar to our previous one. This makes sense because if there's more terrorist attacks occurring, it's likely that more deaths are occurring as well. According to BBC (https://www.bbc.com/news/world-us-canada-33206784), the sharp spike we see in 2014 was due to increased activity by groups like the Islamic State and Boko Haram.
+
+While it seems like the number is increasing on the bar graph, let's fit a linear regression model to see how much the number of people killed in terrorist attacks increases each year on average.
+
+``` {r lethal_fit}
+lethal_fit <- lm(tot_kill~iyear, data=lethal)
+lethal_fit_stats <- lethal_fit %>% tidy()
+lethal_fit_stats %>% select(term, estimate, std.error, p.value)
+```
+
+From this, we can see that the average number of people killed increases by about 470.54 each year. But again, we need to see if this value is statistically significant? Our null hypothesis is that there is no relationship between the year and the number of people killed by terorrist attacks. Our alternative hypothesis is that there is a relationship. 
+
+By lookin at the p-value, we can see that 8.5465e-08 < 0.01 so we can reject our null hypothesis at a 99% confidence level. This means our estimate of 470.54 increase per year is statistically significant. Now let's get a little more specific and look at which regions have the most lethal terrorist attacks.
+
+``` {r lethal_region}
+lethal_region <- gtd %>% dplyr::group_by(region_txt) %>% 
+  dplyr::summarize(tot_kill=sum(nkill, na.rm=TRUE)) %>% 
+  arrange(desc(tot_kill))
+head(lethal_region)
+```
+
+The three most lethal regions are the Middle East & North Africa, South Asia, and Sub-Saharan Africa. This is slightly unexpected because if we look back at our pie chart, Sub-Saharan Africa accounted for roughly a similar proportion of attacks as South America (9.7% to 10.4%), but had more than double the deaths. How has the lethality of attacks changed over time in these regions?
+
+``` {r lethality_over_time}
+regions = c("Middle East & North Africa", "South Asia")
+leth_reg2 <- gtd %>% dplyr::group_by(iyear, region_txt) %>% 
+  dplyr::summarize(tot_kill=sum(nkill, na.rm=TRUE))
+
+leth_reg2 %>%
+  filter(region_txt %in% regions) %>%
+  ggplot(aes(x=iyear, y=tot_kill)) +
+  facet_grid(~region_txt) +
+  geom_point() + 
+  geom_smooth(method=lm) +
+  labs(x="Year", y="Total Killed")
+```
+
+We use facet_grid to this data side by side. These graphs show that the most lethal regions overall were not always this way and that the number of deaths has increased dramatically from 1970 to 2017. Are all the countries in the Middle East contributing proportionately to the region's death toll? Or are some countries experiencing more lethal terrorist attacks than others? Let's break it down.
+
+``` {r top_lethal_me}
+top_lethal <- gtd %>% filter(region_txt=="Middle East & North Africa") %>% 
+  dplyr::group_by(country_txt) %>% 
+  dplyr::summarize(tot_kill=sum(nkill, na.rm=TRUE)) %>% 
+  arrange(desc(tot_kill))
+head(top_lethal)
+```
+
+An article from The Atlantic (https://www.theatlantic.com/international/archive/2016/07/iraq-terrorism-isis-world/489974/) describes Iraq as the "world capital of terrorism" and our analysis supports this statement. Let's analyze the top 3 most lethal countries in the Middle East to see if they also follow the trend of having a spike in terrorist attacks in recent years.
+
+
+``` {r lethal_country}
+top_3 <- c("Iraq", "Syria", "Algeria")
+lethal_country <- gtd %>% filter(region_txt=="Middle East & North Africa") %>% dplyr::group_by(country_txt, iyear) %>% tally() %>% 
+  arrange(desc(n))
+
+lethal_country %>% filter(country_txt %in% top_3) %>% 
+  ggplot(aes(x=iyear,y=n)) +
+    geom_line(aes(color=country_txt)) +
+    labs(x="Year", y="Number of Attacks", color="Country")
+```
+
+Here we see a big spike in Iraq around 2014. Where are these attacks happening in Iraq during this year? To do this we'll need to use Leaflet. Thankfully, the Global Terrorism Database already includes latitude and longitude information, which is what Leaflet needs to create its map. We'll filter out attacks for only those occurring in Iraq during 2014. 
+
+To answer our question about the most popular weapons in the most lethal country, we can color the markers based on the weapon used in the attack.
+
+``` {r iraq_map_all, warning=FALSE, message=FALSE}
+iraq_data <- gtd %>% filter(iyear==2014 & country_txt=="Iraq")
+
+pal <- colorFactor(c("red", "navy", "yellow", "purple", "green", "black",
+                     "brown"), domain = iraq_data$weaptype1_txt)
+
+iraq_map <- leaflet(iraq_data) %>%
+  addTiles() %>%
+  addCircleMarkers(
+    color = ~pal(weaptype1_txt),
+    stroke = FALSE, fillOpacity = 0.5) %>%
+  addLegend("bottomright", pal = pal, values = ~weaptype1_txt, 
+            title = "Weapon Type")
+iraq_map
+```
+
+It looks like in 2014, explosives were the most popular weapon.
+
+## Conclusion
+
+Here's a wrap-up of things we learned in this tutorial:
+
+* Loading libraries and using read_csv
+* Creating a pie chart to show proportions
+* Calculating averages
+* Plotting data
+* Looking at how data/distribution changes over time
+* Linear regression models
+* Comparing population means
+* Meaning of residuals
+* Analyzing the fit of a linear regression model
+* Hypothesis testing
+* Creating maps and using Leaflet
